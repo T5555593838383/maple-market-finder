@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Maple Market Finder</title>
+<style>
+  :root{--bg:#14161c;--card:#1e222b;--fg:#e8eaf0;--mute:#8b93a5;--accent:#ff9f43;--ok:#3ddc97}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.4 system-ui,sans-serif;padding:12px 16px 40px;max-width:640px;margin-inline:auto}
+  h1{font-size:18px;margin:4px 0 10px}
+  input{width:100%;padding:12px;border-radius:10px;border:1px solid #333a49;background:var(--card);color:var(--fg);font-size:16px}
+  .bar{display:flex;justify-content:space-between;color:var(--mute);font-size:12px;margin:8px 2px}
+  .card{display:flex;gap:12px;background:var(--card);border-radius:12px;padding:10px;margin:8px 0;border:1px solid transparent}
+  .card.best{border-color:var(--ok)}
+  .ic{width:48px;height:48px;flex:none;display:grid;place-items:center;background:#11131a;border-radius:8px;font-size:24px}
+  .ic img{max-width:40px;max-height:40px;image-rendering:pixelated}
+  .main{flex:1;min-width:0}
+  .name{font-weight:600;overflow-wrap:anywhere}
+  .badge{display:inline-block;font-size:12px;padding:1px 8px;border-radius:99px;background:#2d3342;margin-right:6px}
+  .price{color:var(--accent);font-weight:700;font-size:17px}
+  .where{color:var(--mute);font-size:13px;margin-top:2px}
+  .tag{color:var(--ok);font-size:12px;font-weight:700}
+  footer{color:var(--mute);font-size:12px;margin-top:24px}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<h1>🍁 Maple Market Finder <small style="color:var(--mute);font-weight:400">Classic World</small></h1>
+<input id="q" type="search" placeholder="ค้นหาไอเท็ม เช่น Iron Dagger" autofocus>
+<div class="bar"><span id="count"></span><span id="src"></span></div>
+<div id="list"></div>
+<footer>Data: <a href="https://meowdb.com/msclassic/free-market" target="_blank" rel="noopener">NiaDB</a> · Game names/icons © Nexon</footer>
+
+<script>
+// ponytail: API_URL empty = mock data. Set to the cached proxy URL only after meowdb approves crawling (meowdb.com/reuse).
+const API_URL = "";
+const POLL_MS = 10000;   // meowdb rule: max 1 req / 10s — keep poller server-side + cached
+const TZ_OFFSET_H = 0;   // ponytail: unverified server timezone of bumpedAt; calibrate against live data
+const ICON = k => `https://cdn.meowdb.com/icons/${k}.png`; // ponytail: hotlink; self-host/proxy if meowdb objects
+
+// Sample rows (real schema, observed 2026-11-14). Replaced by live data when API_URL is set.
+const MOCK = [
+  {id:1,itemName:"Iron Dagger",itemType:"Equip",itemSubtype:"Dagger",iconKey:"1332007",side:"sell",priceEach:5090,quantity:1,channel:37,fmRoom:7,seller:"Dango",bumpedAt:"2026-11-14 14:20:00"},
+  {id:2,itemName:"Iron Dagger",itemType:"Equip",itemSubtype:"Dagger",iconKey:"1332007",side:"sell",priceEach:8090,quantity:1,channel:37,fmRoom:7,seller:"Dango",bumpedAt:"2026-11-14 14:20:00"},
+  {id:3,itemName:"Red Hwarang Shirt",itemType:"Equip",itemSubtype:"Top",iconKey:"1040040",side:"sell",priceEach:5000,quantity:1,channel:37,fmRoom:7,seller:"Dango",bumpedAt:"2026-11-14 14:19:00"},
+  {id:4,itemName:"Black Sneak Pants",itemType:"Equip",itemSubtype:"Bottom",iconKey:"1060028",side:"sell",priceEach:2990,quantity:1,channel:37,fmRoom:7,seller:"Dango",bumpedAt:"2026-11-14 14:18:00"},
+  {id:5,itemName:"Gloves Accuracy Scroll: Greater",itemType:"Use",itemSubtype:"Scroll",iconKey:"2040810",side:"sell",priceEach:5000,quantity:2,channel:15,fmRoom:15,seller:"Renshii",bumpedAt:"2026-11-14 14:10:00"},
+  {id:6,itemName:"Orange Potion",itemType:"Use",itemSubtype:"Potion",iconKey:"2000001",side:"sell",priceEach:120,quantity:50,channel:5,fmRoom:9,seller:"Bearlynaked",bumpedAt:"2026-11-14 14:23:00"},
+];
+
+// itemSubtype first (observed: Top/Bottom/Overall/Dagger/...), else fall back to MapleStory item-id prefix.
+const SUB = {Top:["👕","เสื้อ"],Bottom:["👖","กางเกง"],Overall:["🥋","ชุดเต็ม"],Glove:["🧤","ถุงมือ"],Gloves:["🧤","ถุงมือ"],Shoes:["👟","รองเท้า"],Hat:["🎩","หมวก"],Cape:["🧣","ผ้าคลุม"],Shield:["🛡️","โล่"],Earring:["👂","ต่างหู"],Scroll:["📜","สกรอลล์"],Potion:["🧪","ยา"],Gem:["💎","อัญมณี"],"Ore & Mineral":["⛏️","แร่"],"Monster Drop":["👾","ของดรอป"]};
+const PREFIX = {100:["🎩","หมวก"],104:["👕","เสื้อ"],105:["🥋","ชุดเต็ม"],106:["👖","กางเกง"],107:["👟","รองเท้า"],108:["🧤","ถุงมือ"],109:["🛡️","โล่"],110:["🧣","ผ้าคลุม"],103:["👂","ต่างหู"]};
+function category(r){
+  if (SUB[r.itemSubtype]) return SUB[r.itemSubtype];
+  const p = PREFIX[String(r.iconKey).slice(0,3)];
+  if (p) return p;
+  return r.itemSubtype ? ["⚔️", r.itemSubtype] : ["📦", r.itemType || "?"];
+}
+
+// cheapest first, ties -> freshest first
+const sortBest = rows => [...rows].sort((a,b)=>a.priceEach-b.priceEach || b.bumpedAt.localeCompare(a.bumpedAt));
+
+function age(ts){
+  const t = Date.parse(ts.replace(" ","T")+"Z") - TZ_OFFSET_H*3600e3;
+  const m = Math.max(0, Math.round((Date.now()-t)/60000));
+  return m<1?"เมื่อกี้":m<60?`${m} นาทีที่แล้ว`:`${Math.round(m/60)} ชม.ที่แล้ว`;
+}
+const esc = s => String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+let data = MOCK;
+async function load(){
+  if (!API_URL) { document.getElementById("src").textContent = "mock data"; return render(); }
+  try {
+    const j = await (await fetch(API_URL)).json();
+    data = j.rows; document.getElementById("src").textContent = "live · " + new Date().toLocaleTimeString();
+  } catch(e){ document.getElementById("src").textContent = "โหลดไม่ได้ (แสดงข้อมูลเดิม)"; }
+  render();
+}
+
+function render(){
+  const q = document.getElementById("q").value.trim().toLowerCase();
+  const rows = sortBest(data.filter(r => r.side==="sell" && (!q || r.itemName.toLowerCase().includes(q))));
+  document.getElementById("count").textContent = rows.length + " listing";
+  document.getElementById("list").innerHTML = rows.map((r,i)=>{
+    const [emoji,label] = category(r);
+    return `<div class="card ${i===0&&q?"best":""}">
+      <div class="ic"><img src="${ICON(esc(r.iconKey))}" alt="" loading="lazy" onerror="this.replaceWith('${emoji}')"></div>
+      <div class="main">
+        <div class="name">${esc(r.itemName)}</div>
+        <div><span class="badge">${emoji} ${esc(label)}</span><span class="price">${r.priceEach.toLocaleString()}</span> <span class="where">x${r.quantity}</span> ${i===0&&q?'<span class="tag">ถูกสุด</span>':""}</div>
+        <div class="where">Ch ${r.channel} · Room ${r.fmRoom} · ${esc(r.seller)} · ${age(r.bumpedAt)}</div>
+      </div></div>`;
+  }).join("") || '<p class="where">ไม่เจอ</p>';
+}
+
+document.getElementById("q").addEventListener("input", render);
+load();
+if (API_URL) setInterval(load, POLL_MS);
+
+// self-check (fails loudly in console if sort/category break)
+console.assert(sortBest(MOCK)[0].priceEach===120, "cheapest first");
+console.assert(category(MOCK[2])[1]==="เสื้อ", "Top -> เสื้อ");
+console.assert(category({iconKey:"1082002",itemSubtype:"Weird"})[1]==="ถุงมือ"||category({iconKey:"1082002",itemSubtype:"Weird"})[1]==="Weird", "category fallback");
+console.assert(category({iconKey:"1082002"})[1]==="ถุงมือ", "108 prefix -> ถุงมือ");
+</script>
+</body>
+</html>
